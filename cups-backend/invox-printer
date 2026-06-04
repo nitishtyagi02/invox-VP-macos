@@ -1,0 +1,79 @@
+#!/bin/bash
+# INVOX Virtual Printer — CUPS Backend
+#
+# This script is called by CUPS when a user prints to the "INVOX Digital Mailbox" printer.
+# It converts the input (PostScript/PDF) to PDF and places it in the spool directory
+# for the Desktop Agent to pick up.
+#
+# CUPS backend interface:
+#   backend job-id user title copies options [file]
+#
+# Install: sudo cp invox-printer /usr/libexec/cups/backend/invox && sudo chmod 755 /usr/libexec/cups/backend/invox
+# Register: lpadmin -p "INVOX-Digital-Mailbox" -v "invox:/" -E -m "raw"
+
+SPOOL_DIR="$HOME/Library/Application Support/INVOX/spool"
+
+# When called with no args, CUPS wants device discovery info
+if [ $# -eq 0 ]; then
+    echo "direct invox:/ \"Unknown\" \"INVOX Digital Mailbox\" \"Send documents to INVOX digital mailbox\""
+    exit 0
+fi
+
+# Parse CUPS arguments
+JOB_ID="$1"
+USER="$2"
+TITLE="$3"
+COPIES="$4"
+OPTIONS="$5"
+FILE="$6"
+
+# Create spool directory
+mkdir -p "$SPOOL_DIR"
+
+# Generate unique output filename
+TIMESTAMP=$(date +%Y%m%d_%H%M%S)
+OUTPUT_FILE="$SPOOL_DIR/${TIMESTAMP}_${JOB_ID}.pdf"
+
+# Read input: from file argument or stdin
+if [ -n "$FILE" ]; then
+    INPUT="$FILE"
+else
+    INPUT="/tmp/invox_input_${JOB_ID}"
+    cat > "$INPUT"
+fi
+
+# Detect input format and convert to PDF
+MAGIC=$(head -c 4 "$INPUT" 2>/dev/null)
+if [ "$MAGIC" = "%PDF" ]; then
+    # Already PDF — copy directly
+    cp "$INPUT" "$OUTPUT_FILE"
+elif [ "$MAGIC" = "%!PS" ]; then
+    # PostScript — convert via pstopdf (macOS built-in)
+    /usr/bin/pstopdf "$INPUT" -o "$OUTPUT_FILE" 2>/dev/null
+    if [ $? -ne 0 ]; then
+        # Fallback: try cupsfilter
+        /usr/sbin/cupsfilter -m application/pdf "$INPUT" > "$OUTPUT_FILE" 2>/dev/null
+    fi
+else
+    # Unknown format — try cupsfilter as catch-all
+    /usr/sbin/cupsfilter -m application/pdf "$INPUT" > "$OUTPUT_FILE" 2>/dev/null
+    if [ $? -ne 0 ]; then
+        # Last resort: copy raw (agent will handle error)
+        cp "$INPUT" "$OUTPUT_FILE"
+    fi
+fi
+
+# Write metadata sidecar for the agent
+cat > "${OUTPUT_FILE%.pdf}.meta" << EOF
+job_id=$JOB_ID
+user=$USER
+title=$TITLE
+timestamp=$TIMESTAMP
+EOF
+
+# Cleanup temp input
+if [ -z "$FILE" ] && [ -f "/tmp/invox_input_${JOB_ID}" ]; then
+    rm -f "/tmp/invox_input_${JOB_ID}"
+fi
+
+exit 0
