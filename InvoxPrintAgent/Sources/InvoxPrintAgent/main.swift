@@ -1,18 +1,49 @@
 import AppKit
 import UserNotifications
 
-class AppDelegate: NSObject, NSApplicationDelegate, SpoolWatcherDelegate, DeliveryPopupDelegate {
+class AppDelegate: NSObject, NSApplicationDelegate, SpoolWatcherDelegate, DeliveryPopupDelegate, LoginWindowDelegate {
     private let watcher = SpoolWatcher()
     private let apiClient = ApiClient()
     private var popup: DeliveryPopup?
+    private var loginWindow: LoginWindow?
     private var currentPDFPath: String?
     private var statusItem: NSStatusItem?
+    private var companyName: String = "INVOX"
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         setupMenuBar()
+
+        // Check if already authenticated
+        if KeychainHelper.load(key: Config.keychainAccountToken) != nil {
+            startWatching()
+        } else {
+            showLogin()
+        }
+    }
+
+    private func showLogin() {
+        loginWindow = LoginWindow()
+        loginWindow?.delegate = self
+        loginWindow?.show()
+    }
+
+    private func startWatching() {
         watcher.delegate = self
         watcher.start()
-        print("[InvoxPrintAgent] Started. Waiting for print jobs...")
+        print("[InvoxPrintAgent] Authenticated as \(companyName). Waiting for print jobs...")
+    }
+
+    // MARK: - LoginWindowDelegate
+    func loginDidSucceed(companyName: String) {
+        self.companyName = companyName
+        loginWindow = nil
+        updateMenuTitle()
+        startWatching()
+        showNotification(title: "INVOX Ready", body: "Logged in as \(companyName). Print to send documents.")
+    }
+
+    func loginDidFail(error: String) {
+        showNotification(title: "Login Failed", body: error)
     }
 
     // MARK: - Menu Bar
@@ -21,11 +52,25 @@ class AppDelegate: NSObject, NSApplicationDelegate, SpoolWatcherDelegate, Delive
         if let button = statusItem?.button {
             button.title = "📬"
         }
+        updateMenuTitle()
+    }
+
+    private func updateMenuTitle() {
         let menu = NSMenu()
-        menu.addItem(NSMenuItem(title: "INVOX Print Agent", action: nil, keyEquivalent: ""))
+        menu.addItem(NSMenuItem(title: "INVOX — \(companyName)", action: nil, keyEquivalent: ""))
         menu.addItem(NSMenuItem.separator())
+        menu.addItem(NSMenuItem(title: "Log Out", action: #selector(logout), keyEquivalent: ""))
         menu.addItem(NSMenuItem(title: "Quit", action: #selector(quit), keyEquivalent: "q"))
         statusItem?.menu = menu
+    }
+
+    @objc private func logout() {
+        watcher.stop()
+        KeychainHelper.delete(key: Config.keychainAccountToken)
+        KeychainHelper.delete(key: Config.keychainAccountRefresh)
+        companyName = "INVOX"
+        updateMenuTitle()
+        showLogin()
     }
 
     @objc private func quit() {
@@ -56,7 +101,12 @@ class AppDelegate: NSObject, NSApplicationDelegate, SpoolWatcherDelegate, Delive
                             : "Queued — invite sent to \(recipient)")
                     self.cleanupSpool(path: pdfPath)
                 case .failure(let error):
-                    self.showNotification(title: "Send Failed", body: error.localizedDescription)
+                    if case ApiError.notAuthenticated = error {
+                        self.showNotification(title: "Session Expired", body: "Please log in again.")
+                        self.logout()
+                    } else {
+                        self.showNotification(title: "Send Failed", body: error.localizedDescription)
+                    }
                 }
             }
         }

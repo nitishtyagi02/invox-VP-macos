@@ -7,8 +7,41 @@ class ApiClient {
         self.baseURL = baseURL
     }
 
+    /// Refresh the access token using the stored refresh token
+    func refreshToken(completion: @escaping (Bool) -> Void) {
+        guard let refreshToken = KeychainHelper.load(key: Config.keychainAccountRefresh) else {
+            completion(false)
+            return
+        }
+        let url = URL(string: "\(baseURL)/tenants/refresh")!
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.httpBody = try? JSONSerialization.data(withJSONObject: ["refreshToken": refreshToken])
+
+        URLSession.shared.dataTask(with: request) { data, response, _ in
+            guard let http = response as? HTTPURLResponse, http.statusCode == 200,
+                  let data = data,
+                  let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+                  let dataObj = json["data"] as? [String: String],
+                  let newAccess = dataObj["accessToken"],
+                  let newRefresh = dataObj["refreshToken"] else {
+                completion(false)
+                return
+            }
+            KeychainHelper.save(key: Config.keychainAccountToken, value: newAccess)
+            KeychainHelper.save(key: Config.keychainAccountRefresh, value: newRefresh)
+            completion(true)
+        }.resume()
+    }
+
     func deliver(pdfPath: String, recipient: String, documentType: String, subject: String?,
                  completion: @escaping (Result<DeliveryResponse, Error>) -> Void) {
+        deliverInternal(pdfPath: pdfPath, recipient: recipient, documentType: documentType, subject: subject, retried: false, completion: completion)
+    }
+
+    private func deliverInternal(pdfPath: String, recipient: String, documentType: String, subject: String?,
+                                 retried: Bool, completion: @escaping (Result<DeliveryResponse, Error>) -> Void) {
         guard let token = KeychainHelper.load(key: Config.keychainAccountToken) else {
             completion(.failure(ApiError.notAuthenticated))
             return
@@ -39,13 +72,24 @@ class ApiClient {
 
         request.httpBody = body
 
-        URLSession.shared.dataTask(with: request) { data, response, error in
+        URLSession.shared.dataTask(with: request) { [weak self] data, response, error in
             if let error = error {
                 completion(.failure(error))
                 return
             }
             guard let http = response as? HTTPURLResponse, let data = data else {
                 completion(.failure(ApiError.invalidResponse))
+                return
+            }
+            if http.statusCode == 401 && !retried {
+                // Try refresh and retry once
+                self?.refreshToken { success in
+                    if success {
+                        self?.deliverInternal(pdfPath: pdfPath, recipient: recipient, documentType: documentType, subject: subject, retried: true, completion: completion)
+                    } else {
+                        completion(.failure(ApiError.notAuthenticated))
+                    }
+                }
                 return
             }
             if http.statusCode == 401 {
