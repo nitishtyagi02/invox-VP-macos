@@ -54,7 +54,7 @@ class SpoolWatcher {
     private func currentPDFs() -> [String] {
         let fm = FileManager.default
         guard let files = try? fm.contentsOfDirectory(atPath: spoolPath) else { return [] }
-        return files.filter { $0.hasSuffix(".pdf") }.map { "\(spoolPath)/\($0)" }
+        return files.filter { $0.hasSuffix(".pdf") && $0.hasPrefix("invox_") }.map { "\(spoolPath)/\($0)" }
     }
 
     private func loadMetadata(for pdfPath: String) -> [String: String] {

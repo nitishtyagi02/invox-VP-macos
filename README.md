@@ -1,101 +1,155 @@
-# INVOX Virtual Printer — macOS
+# INVOX Virtual Printer — macOS Desktop Agent
 
-A virtual printer that captures print output from any application and delivers it as a PDF to a recipient's INVOX digital mailbox.
+A macOS application that adds an "INVOX Digital Mailbox" virtual printer to your system. Print from any app to send documents (receipts, invoices, letters) directly to a recipient's INVOX digital mailbox.
 
-## Architecture
+## How It Works
 
 ```
-┌──────────────┐     ┌────────────────┐     ┌──────────────────┐     ┌────────────┐
-│ Any App      │────▶│ CUPS Backend   │────▶│ Desktop Agent    │────▶│ INVOX API  │
-│ (Print Cmd)  │     │ (invox-printer)│     │ (Swift/AppKit)   │     │ /print-    │
-└──────────────┘     │ Outputs PDF to │     │ - Monitors spool │     │  deliver   │
-                     │ spool directory│     │ - Shows popup    │     └────────────┘
-                     └────────────────┘     │ - Uploads PDF    │
-                                            │ - Toast confirm  │
-                                            └──────────────────┘
+┌─────────────────┐      ┌──────────────────┐      ┌─────────────────────┐
+│  Any macOS App  │      │   macOS CUPS     │      │  INVOX Print Agent  │
+│  (Cmd+P)        │─────▶│   IPP Backend    │─────▶│  (IPP Server :63140)│
+│                 │      │                  │      │  Shows popup        │
+└─────────────────┘      └──────────────────┘      │  Calls API          │
+                                                    └─────────┬───────────┘
+                                                              │
+                                                              ▼
+                                                    ┌─────────────────────┐
+                                                    │  INVOX Backend API  │
+                                                    │  Delivers document  │
+                                                    │  to recipient       │
+                                                    └─────────────────────┘
 ```
 
-## Components
+1. User prints from any app → selects "INVOX Digital Mailbox" printer
+2. CUPS sends the print job via IPP to the agent (localhost:63140)
+3. Agent shows a popup asking for recipient (email/phone) and document type
+4. Agent uploads the PDF to the INVOX backend API
+5. Backend delivers to the recipient's digital mailbox (or sends an invite if not registered)
 
-### 1. CUPS Backend (`cups-backend/invox-printer`)
-- Registers as a printer in macOS System Preferences
-- Receives PostScript/PDF from print subsystem
-- Converts to PDF (via `pstopdf` if needed) and writes to spool directory
+## Installation
 
-### 2. Desktop Agent (`InvoxPrintAgent/`)
-- Swift/AppKit application running as LaunchAgent
-- Monitors spool directory via FSEvents
-- On new PDF: shows popup window (recipient + document type)
-- Calls `POST /api/v1/tenants/me/print-deliver` with PDF + metadata
-- Stores auth token in macOS Keychain
-- Offline queue with retry (SQLite)
-- Toast notification on success/failure
-
-### 3. Installer (`installer/`)
-- Registers CUPS printer
-- Installs LaunchAgent plist
-- First-run: opens browser for partner login → stores token
-
-## Prerequisites
-
-- macOS 13+ (Ventura or later)
-- Xcode 15+ (for building Swift agent)
-- CUPS (pre-installed on macOS)
-
-## Quick Setup (Development)
+### From .pkg installer
 
 ```bash
-# 1. Install CUPS backend
-sudo cp cups-backend/invox-printer /usr/libexec/cups/backend/invox
-sudo chmod 755 /usr/libexec/cups/backend/invox
+# Build the installer
+bash installer/build-pkg.sh
 
-# 2. Register printer
-lpadmin -p "INVOX-Digital-Mailbox" -v "invox:/" -E -m "raw"
+# Install
+open dist/InvoxPrintAgent-1.0.0.pkg
+```
 
-# 3. Build and run agent
+The installer:
+- Installs the app to `/Applications/INVOX Print Agent.app`
+- Registers the virtual printer with CUPS
+- Sets up auto-start on login (LaunchAgent)
+
+### Manual (Development)
+
+```bash
+# 1. Build and run the agent
 cd InvoxPrintAgent
-swift build
-.build/debug/InvoxPrintAgent
+swift run
 
-# 4. Test: print from any app → select "INVOX Digital Mailbox" printer
+# 2. Register the printer (while agent is running)
+sudo lpadmin -p "INVOX-Digital-Mailbox" \
+    -v "ipp://127.0.0.1:63140/" -E \
+    -P "../cups-backend/INVOX-IPP.ppd" \
+    -D "INVOX Digital Mailbox"
+
+# 3. Remove cupsFilter line from installed PPD
+sudo sed -i '' '/*cupsFilter/d' /private/etc/cups/ppd/INVOX-Digital-Mailbox.ppd
 ```
 
-## API Integration
+## Usage
 
-The agent calls:
-```
-POST /api/v1/tenants/me/print-deliver
-Content-Type: multipart/form-data
+1. The agent runs in the menu bar (📬 icon)
+2. First launch shows a login window — enter your partner credentials
+3. Print from any app → Cmd+P → select "INVOX Digital Mailbox"
+4. A popup appears asking for:
+   - Recipient (email or phone)
+   - Document type (Receipt, Letter, Notice, Other)
+   - Subject (optional)
+5. Click Send — document is delivered to the recipient
 
-- recipient: email or phone
-- documentType: RECEIPT | LETTER | NOTICE | OTHER
-- subject: (optional)
-- file: PDF binary
-```
-
-Auth: `Authorization: Bearer <tenant_access_token>` (stored in Keychain, refreshable)
-
-## Directory Structure
+## Project Structure
 
 ```
 invox-VP-macos/
-├── README.md
+├── InvoxPrintAgent/           # Swift macOS app
+│   ├── Package.swift
+│   └── Sources/InvoxPrintAgent/
+│       ├── main.swift          # AppDelegate, menu bar, popup coordination
+│       ├── IPPServer.swift     # Minimal IPP server (receives print jobs)
+│       ├── DeliveryPopup.swift # Recipient input popup window
+│       ├── LoginWindow.swift   # Partner login form
+│       ├── ApiClient.swift     # Backend API (deliver, auth, refresh)
+│       ├── KeychainHelper.swift# macOS Keychain for token storage
+│       ├── Config.swift        # Port, API URL, paths
+│       ├── SpoolWatcher.swift  # (legacy) filesystem watcher
+│       └── PrintJobReceiver.swift # (legacy) HTTP receiver
 ├── cups-backend/
-│   └── invox-printer          # CUPS backend script
-├── InvoxPrintAgent/
-│   ├── Package.swift          # Swift Package Manager
-│   └── Sources/
-│       └── InvoxPrintAgent/
-│           ├── main.swift             # Entry point
-│           ├── SpoolWatcher.swift     # FSEvents directory monitor
-│           ├── DeliveryPopup.swift    # AppKit popup window
-│           ├── ApiClient.swift        # INVOX API calls
-│           ├── KeychainHelper.swift   # Secure token storage
-│           ├── OfflineQueue.swift     # SQLite offline queue
-│           └── Config.swift           # Configuration
+│   ├── INVOX-IPP.ppd          # Printer description for CUPS
+│   ├── invox-filter            # (legacy) CUPS filter approach
+│   ├── invox-printer           # (legacy) CUPS backend approach
+│   └── invox-bridge.sh         # (legacy) root bridge script
 ├── installer/
-│   ├── install.sh             # Dev install script
-│   ├── uninstall.sh           # Cleanup script
-│   └── com.invox.printagent.plist  # LaunchAgent
-└── .gitignore
+│   ├── build-pkg.sh           # Build script → produces .pkg
+│   ├── postinstall            # Runs after .pkg install
+│   ├── com.invox.printagent.plist  # LaunchAgent for auto-start
+│   ├── install.sh             # (legacy) manual install
+│   └── uninstall.sh           # Uninstall script
+├── dist/                      # Build output (.app, .pkg)
+├── PROGRESS.md                # Technical findings & history
+└── README.md                  # This file
 ```
+
+## Configuration
+
+Edit `Sources/InvoxPrintAgent/Config.swift`:
+
+| Setting | Default | Description |
+|---------|---------|-------------|
+| `apiBaseURL` | `http://localhost:8080/api/v1` | INVOX backend URL |
+| `ippPort` | `63140` | IPP server port |
+| `spoolDirectory` | `~/Library/Application Support/INVOX/spool` | PDF storage |
+
+## Building
+
+```bash
+# Debug build
+cd InvoxPrintAgent && swift build
+
+# Release build
+cd InvoxPrintAgent && swift build -c release
+
+# Build .pkg installer
+bash installer/build-pkg.sh
+```
+
+## Uninstall
+
+```bash
+# Remove printer
+sudo lpadmin -x INVOX-Digital-Mailbox
+
+# Remove LaunchAgent
+launchctl unload ~/Library/LaunchAgents/com.invox.printagent.plist
+rm ~/Library/LaunchAgents/com.invox.printagent.plist
+
+# Remove app
+rm -rf "/Applications/INVOX Print Agent.app"
+```
+
+## Technical Notes
+
+- **IPP approach**: The agent runs a minimal IPP 1.1 server. CUPS treats it as a network printer and sends jobs directly — no sandbox restrictions.
+- **Previous approaches** (CUPS filter, backend script, bridge) were blocked by macOS CUPS sandbox which prevents filters/backends from writing to user-accessible paths or making network calls.
+- **Chunked encoding**: CUPS sends print data using HTTP/1.1 chunked transfer encoding. The IPP server decodes this before extracting the PDF.
+- **PPD**: Required by CUPS to register the printer. Uses `cupsFilter2` for PDF passthrough (removed post-install to avoid filter chain).
+- **Auto-start**: LaunchAgent starts the agent on login. The printer only works while the agent is running.
+
+## Requirements
+
+- macOS 13+ (Ventura or later)
+- Swift 5.9+
+- INVOX backend running (for document delivery)

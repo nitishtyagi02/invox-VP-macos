@@ -89,13 +89,17 @@ class DeliveryPopup: NSObject, NSWindowDelegate {
         }
         let type = typePopup.titleOfSelectedItem ?? "OTHER"
         let subject = subjectField.stringValue.isEmpty ? nil : subjectField.stringValue
-        window?.close()
-        delegate?.popup(self, didSubmitRecipient: recipient, type: type, subject: subject)
+        window?.orderOut(nil)
+        DispatchQueue.main.async {
+            self.delegate?.popup(self, didSubmitRecipient: recipient, type: type, subject: subject)
+        }
     }
 
     @objc private func cancelClicked() {
-        window?.close()
-        delegate?.popupDidCancel(self)
+        window?.orderOut(nil)
+        DispatchQueue.main.async {
+            self.delegate?.popupDidCancel(self)
+        }
     }
 
     func windowWillClose(_ notification: Notification) {

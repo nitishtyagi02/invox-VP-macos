@@ -1,0 +1,21 @@
+#!/bin/bash
+# CUPS filter: saves PDF to CUPS TMPDIR and passes through
+SPOOL_DIR="${TMPDIR:-/private/var/spool/cups/tmp}"
+JOB_ID="$1"
+USER="$2"
+TITLE="$3"
+TIMESTAMP=$(date +%Y%m%d_%H%M%S)
+OUTPUT="$SPOOL_DIR/invox_${TIMESTAMP}_${JOB_ID}.pdf"
+
+if [ -n "$6" ]; then
+    cp "$6" "$OUTPUT"
+    cat "$6"
+else
+    tee "$OUTPUT"
+fi
+
+printf "job_id=%s\nuser=%s\ntitle=%s\ntimestamp=%s\n" "$JOB_ID" "$USER" "$TITLE" "$TIMESTAMP" > "${OUTPUT%.pdf}.meta"
+
+# Keep the filter alive so CUPS doesn't delete the file before bridge copies it
+sleep 3
+exit 0

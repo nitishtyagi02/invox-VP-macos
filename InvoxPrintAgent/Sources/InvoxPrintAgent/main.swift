@@ -1,8 +1,7 @@
 import AppKit
-import UserNotifications
 
-class AppDelegate: NSObject, NSApplicationDelegate, SpoolWatcherDelegate, DeliveryPopupDelegate, LoginWindowDelegate {
-    private let watcher = SpoolWatcher()
+class AppDelegate: NSObject, NSApplicationDelegate, DeliveryPopupDelegate, LoginWindowDelegate {
+    private let ippServer = IPPServer()
     private let apiClient = ApiClient()
     private var popup: DeliveryPopup?
     private var loginWindow: LoginWindow?
@@ -13,9 +12,14 @@ class AppDelegate: NSObject, NSApplicationDelegate, SpoolWatcherDelegate, Delive
     func applicationDidFinishLaunching(_ notification: Notification) {
         setupMenuBar()
 
-        // Check if already authenticated
+        // Always start IPP server (printer needs it even before login)
+        ippServer.onJobReceived = { [weak self] pdfPath, title in
+            self?.handlePrintJob(pdfPath: pdfPath, title: title)
+        }
+        ippServer.start()
+
         if KeychainHelper.load(key: Config.keychainAccountToken) != nil {
-            startWatching()
+            onReady()
         } else {
             showLogin()
         }
@@ -27,10 +31,16 @@ class AppDelegate: NSObject, NSApplicationDelegate, SpoolWatcherDelegate, Delive
         loginWindow?.show()
     }
 
-    private func startWatching() {
-        watcher.delegate = self
-        watcher.start()
-        print("[InvoxPrintAgent] Authenticated as \(companyName). Waiting for print jobs...")
+    private func onReady() {
+        print("[InvoxPrintAgent] Authenticated as \(companyName). Waiting for print jobs on port \(Config.ippPort)...")
+    }
+
+    // MARK: - Print Job Handler
+    private func handlePrintJob(pdfPath: String, title: String) {
+        currentPDFPath = pdfPath
+        popup = DeliveryPopup()
+        popup?.delegate = self
+        popup?.show(documentTitle: title)
     }
 
     // MARK: - LoginWindowDelegate
@@ -38,7 +48,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, SpoolWatcherDelegate, Delive
         self.companyName = companyName
         loginWindow = nil
         updateMenuTitle()
-        startWatching()
+        onReady()
         showNotification(title: "INVOX Ready", body: "Logged in as \(companyName). Print to send documents.")
     }
 
@@ -48,6 +58,18 @@ class AppDelegate: NSObject, NSApplicationDelegate, SpoolWatcherDelegate, Delive
 
     // MARK: - Menu Bar
     private func setupMenuBar() {
+        // Enable copy/paste by adding Edit menu
+        let mainMenu = NSMenu()
+        let editMenuItem = NSMenuItem()
+        let editMenu = NSMenu(title: "Edit")
+        editMenu.addItem(withTitle: "Cut", action: #selector(NSText.cut(_:)), keyEquivalent: "x")
+        editMenu.addItem(withTitle: "Copy", action: #selector(NSText.copy(_:)), keyEquivalent: "c")
+        editMenu.addItem(withTitle: "Paste", action: #selector(NSText.paste(_:)), keyEquivalent: "v")
+        editMenu.addItem(withTitle: "Select All", action: #selector(NSText.selectAll(_:)), keyEquivalent: "a")
+        editMenuItem.submenu = editMenu
+        mainMenu.addItem(editMenuItem)
+        NSApp.mainMenu = mainMenu
+
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
         if let button = statusItem?.button {
             button.title = "📬"
@@ -65,7 +87,6 @@ class AppDelegate: NSObject, NSApplicationDelegate, SpoolWatcherDelegate, Delive
     }
 
     @objc private func logout() {
-        watcher.stop()
         KeychainHelper.delete(key: Config.keychainAccountToken)
         KeychainHelper.delete(key: Config.keychainAccountRefresh)
         companyName = "INVOX"
@@ -74,17 +95,8 @@ class AppDelegate: NSObject, NSApplicationDelegate, SpoolWatcherDelegate, Delive
     }
 
     @objc private func quit() {
-        watcher.stop()
+        ippServer.stop()
         NSApp.terminate(nil)
-    }
-
-    // MARK: - SpoolWatcherDelegate
-    func spoolWatcher(_ watcher: SpoolWatcher, didDetectNewPDF path: String, metadata: [String: String]) {
-        currentPDFPath = path
-        let title = metadata["title"] ?? URL(fileURLWithPath: path).lastPathComponent
-        popup = DeliveryPopup()
-        popup?.delegate = self
-        popup?.show(documentTitle: title)
     }
 
     // MARK: - DeliveryPopupDelegate
@@ -114,24 +126,21 @@ class AppDelegate: NSObject, NSApplicationDelegate, SpoolWatcherDelegate, Delive
     }
 
     func popupDidCancel(_ popup: DeliveryPopup) {
-        // Leave PDF in spool for next attempt
         currentPDFPath = nil
     }
 
     // MARK: - Helpers
     private func showNotification(title: String, body: String) {
-        let content = UNMutableNotificationContent()
-        content.title = title
-        content.body = body
-        content.sound = .default
-        let request = UNNotificationRequest(identifier: UUID().uuidString, content: content, trigger: nil)
-        UNUserNotificationCenter.current().add(request)
+        let alert = NSAlert()
+        alert.messageText = title
+        alert.informativeText = body
+        alert.alertStyle = .informational
+        alert.addButton(withTitle: "OK")
+        alert.runModal()
     }
 
     private func cleanupSpool(path: String) {
         try? FileManager.default.removeItem(atPath: path)
-        let metaPath = path.replacingOccurrences(of: ".pdf", with: ".meta")
-        try? FileManager.default.removeItem(atPath: metaPath)
     }
 }
 
@@ -139,5 +148,5 @@ class AppDelegate: NSObject, NSApplicationDelegate, SpoolWatcherDelegate, Delive
 let app = NSApplication.shared
 let delegate = AppDelegate()
 app.delegate = delegate
-app.setActivationPolicy(.accessory) // Menu bar only, no dock icon
+app.setActivationPolicy(.accessory)
 app.run()

@@ -11,8 +11,6 @@
 # Install: sudo cp invox-printer /usr/libexec/cups/backend/invox && sudo chmod 755 /usr/libexec/cups/backend/invox
 # Register: lpadmin -p "INVOX-Digital-Mailbox" -v "invox:/" -E -m "raw"
 
-SPOOL_DIR="$HOME/Library/Application Support/INVOX/spool"
-
 # When called with no args, CUPS wants device discovery info
 if [ $# -eq 0 ]; then
     echo "direct invox:/ \"Unknown\" \"INVOX Digital Mailbox\" \"Send documents to INVOX digital mailbox\""
@@ -21,11 +19,14 @@ fi
 
 # Parse CUPS arguments
 JOB_ID="$1"
-USER="$2"
+PRINT_USER="$2"
 TITLE="$3"
 COPIES="$4"
 OPTIONS="$5"
 FILE="$6"
+
+# Resolve spool directory — fixed shared path accessible by root (CUPS) and user (agent)
+SPOOL_DIR="/usr/local/var/invox/spool"
 
 # Create spool directory
 mkdir -p "$SPOOL_DIR"
@@ -66,7 +67,7 @@ fi
 # Write metadata sidecar for the agent
 cat > "${OUTPUT_FILE%.pdf}.meta" << EOF
 job_id=$JOB_ID
-user=$USER
+user=$PRINT_USER
 title=$TITLE
 timestamp=$TIMESTAMP
 EOF

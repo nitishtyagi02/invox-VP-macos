@@ -10,4 +10,5 @@ enum Config {
     static let keychainService = "com.invox.printagent"
     static let keychainAccountToken = "access_token"
     static let keychainAccountRefresh = "refresh_token"
+    static let ippPort: UInt16 = 63140
 }

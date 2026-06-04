@@ -1,0 +1,44 @@
+#!/bin/bash
+# Postinstall script for INVOX Print Agent .pkg
+# Runs as root after installation
+
+APP_PATH="/Applications/INVOX Print Agent.app"
+PLIST_SRC="$APP_PATH/Contents/Resources/com.invox.printagent.plist"
+PPD_SRC="$APP_PATH/Contents/Resources/INVOX-IPP.ppd"
+PRINTER_NAME="INVOX-Digital-Mailbox"
+IPP_PORT=63140
+
+# Get the installing user (not root)
+INSTALL_USER="${USER:-$(stat -f '%Su' /dev/console)}"
+USER_HOME=$(dscl . -read /Users/"$INSTALL_USER" NFSHomeDirectory | awk '{print $2}')
+LAUNCH_AGENTS_DIR="$USER_HOME/Library/LaunchAgents"
+
+# 1. Install LaunchAgent for auto-start
+mkdir -p "$LAUNCH_AGENTS_DIR"
+cp "$PLIST_SRC" "$LAUNCH_AGENTS_DIR/com.invox.printagent.plist"
+chown "$INSTALL_USER" "$LAUNCH_AGENTS_DIR/com.invox.printagent.plist"
+
+# 2. Start the agent now (so printer registration can connect)
+sudo -u "$INSTALL_USER" launchctl load "$LAUNCH_AGENTS_DIR/com.invox.printagent.plist" 2>/dev/null
+sleep 3
+
+# 3. Register IPP printer
+lpadmin -x "$PRINTER_NAME" 2>/dev/null
+lpadmin -p "$PRINTER_NAME" \
+    -v "ipp://127.0.0.1:${IPP_PORT}/" \
+    -E \
+    -P "$PPD_SRC" \
+    -D "INVOX Digital Mailbox"
+
+# Remove cupsFilter from installed PPD (not needed for IPP)
+sed -i '' '/*cupsFilter/d' "/private/etc/cups/ppd/${PRINTER_NAME}.ppd" 2>/dev/null
+
+# 4. Enable printer
+cupsenable "$PRINTER_NAME"
+cupsaccept "$PRINTER_NAME"
+
+# 5. Create spool directory
+sudo -u "$INSTALL_USER" mkdir -p "$USER_HOME/Library/Application Support/INVOX/spool"
+
+echo "INVOX Print Agent installed successfully."
+exit 0
